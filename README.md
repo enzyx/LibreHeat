@@ -10,25 +10,6 @@ codes, and Smart Diagnosis as native Home Assistant entities through the ESPHome
 The UART protocol was documented through logic-analyzer captures between the
 original modem and heater, with implemented commands verified on a WH27S.
 
-## Contents
-
-- [Features](#features)
-- [Hardware](#hardware)
-- [Connecting the ESP32](#connecting-the-esp32)
-- [Software setup](#software-setup)
-- [Home Assistant](#home-assistant)
-- [Entities](#entities)
-- [How the controls work](#how-the-controls-work)
-- [Automations](#automations)
-- [Limitations](#limitations)
-- [Troubleshooting](#troubleshooting)
-- [Development and tests](#development-and-tests)
-- [License](#license)
-- Further documentation:
-  - [UART protocol](docs/protocol.md)
-  - [Schedule mode and on/off](docs/schedule.md)
-  - [Smart Diagnosis decoding](docs/smart-diagnosis.md)
-
 ## Features
 
 ![Main sensors and controls in the ESP web UI](docs/images/web-ui.png)
@@ -38,10 +19,9 @@ original modem and heater, with implemented commands verified on a WH27S.
 - ESP32 board (tested: ESP32 DevKitC / `esp32dev`).
 - Connect to the heater's modem connector: **5 V, TX, RX, GND**.
 
-The heater's modem module matches the LG **LCW-007** arrangement (see the
-[rethink wiki](https://github.com/anszom/rethink/wiki/LCW-007) for pictures of the
-module and connector). Check the pinout on your own unit with a multimeter. Don't
-rely on wire colours.
+The heater's modem module is the LG LCW-007 (see the
+[rethink wiki](https://github.com/anszom/rethink/wiki/LCW-007) for more pinouts). 
+
 
 ## Connecting the ESP32
 
@@ -111,9 +91,8 @@ Home Assistant discovers the device automatically.
 | Operation | On / standby |
 | Schedule | Panel indicator / remote-off permission |
 | Operating Mode | Heat Pump (Eco), Auto, Turbo, Vacation |
-| Set Water Temperature | 35–60 °C; 1 °C steps |
+| Set Water Temperature | 35–60 °C |
 
-**Command status:** Pending / Confirmed / Not confirmed (5 s timeout) / Rejected.
 
 ### Main sensors
 
@@ -121,12 +100,12 @@ Home Assistant discovers the device automatically.
 |---|---|
 | Current / Target Water Temperature | °C |
 | Power Input | W |
-| Energy Consumption | kWh; persistent total |
-| Compressor Step | Raw stage; 0 = off |
-| Filter Remaining | %; reset via panel SET long-press |
+| Energy Consumption | kWh persistent total |
+| Compressor Step | Compressor stage, 0 = off |
+| Filter Remaining | % reset via panel SET long-press |
 | Error Code / Problem | Fault code, description, fault indicator |
 | Notification | Heater alerts |
-| Smart Diagnosis | Local fault analysis; 60 s interval |
+| Smart Diagnosis | Local fault analysis |
 | Extraordinary Operation | Emergency heating flag |
 
 **Diagnostics:** raw values, capabilities, firmware identifiers, UART counters.
@@ -136,12 +115,9 @@ Home Assistant discovers the device automatically.
 These behaviours come from the heater's firmware. They were captured from the
 original LG modem and app, not designed by this project.
 
-- **Operation off** only works while **Schedule** (field 649) is on. That's how LG's
-  own schedule feature switches the heater off. The ESP therefore turns *Schedule*
-  on first (if needed), then sends `503 = 0`. The heater goes to standby and the
-  compressor stops.
-- **Operation on** sends the frame LG's cloud sends at the start of a schedule
-  window: `503 = 1` together with the current mode and target.
+- **Operation off:** enables **Schedule** if needed, then puts the heater in
+  standby and stops the compressor.
+- **Operation on:** turns the heater on with the current mode and target temperature.
 - **Turning Schedule off while the heater is off switches the heater back on.** The
   heater does this itself.
 - **Operating Mode** and **Set Water Temperature** are sent together with the
