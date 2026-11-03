@@ -1,0 +1,8 @@
+# Credentials: copy secrets.example.yaml to secrets.yaml locally
+secrets.yaml
+**/secrets.yaml
+# ESPHome build output and local test binaries
+.esphome/
+build/
+*.o
+/test_wh27s_*

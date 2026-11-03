@@ -1,0 +1,832 @@
+substitutions:
+  wh27s_header_dir: src
+
+esphome:
+  includes:
+    - ${wh27s_header_dir}/wh27s_uart.h
+    - ${wh27s_header_dir}/wh27s_diagnosis.h
+    - ${wh27s_header_dir}/wh27s_esphome.h
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          auto *link = new wh27s::ResearchLink(id(wh27s_uart));
+          link->on_raw = [](const std::string &raw) {
+            id(wh27s_last_frame).publish_state(raw);
+          };
+          link->on_diagnosis = [](const std::string &raw) {
+            id(wh27s_diagnosis).publish_state(raw);
+          };
+          link->on_diagnosis_decoded = [](const wh27s::DiagnosisResult &result) {
+            id(wh27s_diagnosis_decoded).publish_state(result.summary());
+            id(wh27s_diagnosis_index).publish_state(result.valid ? result.index : NAN);
+          };
+          link->on_firmware = [](const std::vector<wh27s::FirmwareRecord> &records) {
+            std::string raw;
+            for (const auto &record : records) {
+              if (!raw.empty()) raw += "; ";
+              raw += std::to_string(record.type) + ":" + record.part_number() + "/" + record.checksum_hex();
+              if (record.type == 11) {
+                id(wh27s_firmware_11).publish_state(record.part_number());
+                id(wh27s_checksum_11).publish_state(record.checksum_hex());
+              } else if (record.type == 12) {
+                id(wh27s_firmware_12).publish_state(record.part_number());
+                id(wh27s_checksum_12).publish_state(record.checksum_hex());
+              }
+            }
+            id(wh27s_firmware_records).publish_state(raw);
+          };
+          link->on_capabilities = [](const std::vector<wh27s::Field> &fields) {
+            id(wh27s_capabilities).publish_state(wh27s::field_list(fields));
+            std::string modes;
+            for (const auto &field : fields) {
+              if (field.type != 727) continue;
+              if (!modes.empty()) modes += "; ";
+              const char *name = wh27s::mode_name(field.value);
+              modes += name != nullptr ? name : std::to_string(field.value);
+            }
+            id(wh27s_supported_modes).publish_state(modes);
+          };
+          link->on_field = [](uint16_t type, uint32_t value) {
+            switch (type) {
+              case 503:
+                if (value <= 1) id(wh27s_operation).publish_state(value == 1);
+                break;
+              case 649:
+                if (value <= 1) id(wh27s_schedule).publish_state(value == 1);
+                break;
+              case 505: {
+                const char *name = wh27s::mode_name(value);
+                if (name != nullptr) id(wh27s_operating_mode).publish_state(name);
+                break;
+              }
+              case 597: id(wh27s_current_temperature).publish_state(value / 2.0f); break;
+              case 598:
+                id(wh27s_target_temperature).publish_state(value / 2.0f);
+                id(wh27s_set_temperature).publish_state(value / 2.0f);
+                break;
+            }
+          };
+          link->on_bridge_closed = []() { id(wh27s_bridge_mode).publish_state(false); };
+          wh27s::research_link() = link;
+
+logger:
+  baud_rate: 0
+  level: DEBUG
+  tx_buffer_size: 512
+
+uart:
+  id: wh27s_uart
+  baud_rate: 9600
+  data_bits: 8
+  parity: NONE
+  stop_bits: 1
+  rx_buffer_size: 4096
+
+globals:
+  - id: wh27s_energy_total_cwh
+    type: uint32_t
+    restore_value: true
+    initial_value: '0'
+
+interval:
+  - interval: 10ms
+    then:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->poll();
+
+switch:
+  - platform: template
+    name: UART Bridge Mode
+    icon: mdi:lan-connect
+    id: wh27s_bridge_mode
+    entity_category: config
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: |-
+          auto *link = wh27s::research_link();
+          if (link == nullptr || !link->start_bridge()) {
+            id(wh27s_bridge_mode).publish_state(false);
+            ESP_LOGW("wh27s", "Bridge refused: transmission disabled, control pending, or socket unavailable");
+          }
+    turn_off_action:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->stop_bridge();
+  - platform: template
+    name: UART Transmission Enable
+    icon: mdi:transit-connection-variant
+    id: wh27s_tx_enable
+    entity_category: config
+    optimistic: true
+    restore_mode: ALWAYS_OFF
+    turn_on_action:
+      - lambda: |-
+          auto *link = wh27s::research_link();
+          if (link != nullptr && link->tx_available) {
+            link->transmit_enabled = true;
+            link->start_reads();
+          } else {
+            id(wh27s_tx_enable).publish_state(false);
+            ESP_LOGW("wh27s", "Transmission unavailable in receive-only firmware");
+          }
+    turn_off_action:
+      - lambda: |-
+          auto *link = wh27s::research_link();
+          if (link != nullptr) {
+            link->transmit_enabled = false;
+            link->stop_bridge();
+            link->temperature.cancel();
+            link->session.stop();
+          }
+  # Panel "Schedule" indicator (field 649); state comes only from heater reports.
+  - platform: template
+    name: Schedule
+    id: wh27s_schedule
+    icon: mdi:calendar-clock
+    optimistic: false
+    restore_mode: DISABLED
+    turn_on_action:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->set_schedule(true);
+    turn_off_action:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->set_schedule(false);
+  # Off = 649=1 then 503=0 (stock schedule behaviour); clearing Schedule while off switches the heater on.
+  - platform: template
+    name: Operation
+    id: wh27s_operation
+    icon: mdi:power
+    optimistic: false
+    restore_mode: DISABLED
+    turn_on_action:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->set_operation(true);
+    turn_off_action:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->set_operation(false);
+
+number:
+  - platform: template
+    name: Set Water Temperature
+    icon: mdi:thermometer-water
+    id: wh27s_set_temperature
+    unit_of_measurement: "\u00b0C"
+    device_class: temperature
+    min_value: 35
+    max_value: 60
+    step: 1
+    mode: SLIDER
+    optimistic: false
+    update_interval: 1s
+    lambda: return id(wh27s_target_temperature).state;
+    set_action:
+      - lambda: |-
+          auto *link = wh27s::research_link();
+          if (link != nullptr && link->set_temperature(x))
+            id(wh27s_requested_target).publish_state(x);
+
+select:
+  - platform: template
+    name: Operating Mode
+    icon: mdi:water-boiler
+    id: wh27s_operating_mode
+    options:
+      - Heat Pump (Eco)
+      - Auto
+      - Turbo
+      - Vacation
+    optimistic: false
+    update_interval: 1s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float mode = link->telemetry.value(505);
+      if (!std::isfinite(mode)) return {};
+      const char *name = wh27s::mode_name(static_cast<uint32_t>(mode));
+      if (name == nullptr) return {};
+      return {name};
+    set_action:
+      - lambda: |-
+          auto *link = wh27s::research_link();
+          for (uint32_t mode = 25; mode <= 28; ++mode) {
+            if (x == wh27s::mode_name(mode)) {
+              if (link != nullptr && link->set_mode(mode))
+                id(wh27s_requested_mode).publish_state(x);
+              return;
+            }
+          }
+
+button:
+  - platform: template
+    name: UART Start Read Session
+    icon: mdi:restart
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->start_reads();
+  - platform: template
+    name: UART Discovery
+    icon: mdi:magnify-scan
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->probe(1, {0xAA, 0x43});
+  - platform: template
+    name: UART Read Status
+    icon: mdi:refresh
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->probe(2, {0x7D, 0x42});
+  - platform: template
+    name: UART Read Firmware Info
+    icon: mdi:chip
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->probe(2, {0xE4, 0xC0});
+  - platform: template
+    name: UART Request Smart Diagnosis
+    icon: mdi:stethoscope
+    entity_category: diagnostic
+    on_press:
+      - lambda: |-
+          if (wh27s::research_link() != nullptr) wh27s::research_link()->probe(2, {0xE6, 0x00});
+
+binary_sensor:
+  # App T20Parser treats any nonzero airState.diagCode (545) as an error.
+  - platform: template
+    name: Problem
+    icon: mdi:alert
+    device_class: problem
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float code = link->telemetry.value(545);
+      if (std::isnan(code)) return {};
+      return code != 0;
+
+sensor:
+  - platform: template
+    name: Smart Diagnosis Index
+    icon: mdi:format-list-numbered
+    id: wh27s_diagnosis_index
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: never
+  - platform: template
+    name: Requested Target Temperature
+    icon: mdi:thermometer-plus
+    id: wh27s_requested_target
+    entity_category: diagnostic
+    unit_of_measurement: "\u00b0C"
+    device_class: temperature
+    accuracy_decimals: 1
+    update_interval: never
+  - platform: template
+    name: Current Water Temperature
+    icon: mdi:thermometer-water
+    id: wh27s_current_temperature
+    unit_of_measurement: "\u00b0C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: never
+  - platform: template
+    name: Target Water Temperature
+    icon: mdi:thermometer-check
+    id: wh27s_target_temperature
+    unit_of_measurement: "\u00b0C"
+    device_class: temperature
+    accuracy_decimals: 1
+    update_interval: never
+  - platform: template
+    name: UART Received Bytes
+    icon: mdi:download-network
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->decoder.received_bytes : 0;
+  - platform: template
+    name: Temperature Unit Raw
+    icon: mdi:temperature-celsius
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(508) : NAN;
+  - platform: template
+    name: Error Code Raw
+    icon: mdi:alert-circle-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(545) : NAN;
+  - platform: template
+    name: Current Raw
+    icon: mdi:current-ac
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(552) : NAN;
+  - platform: template
+    name: Voltage Raw
+    icon: mdi:sine-wave
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(553) : NAN;
+  # Field 554: 0 when idle/off, rose 0 -> 4 -> 15 at compressor start; no Hz/RPM scale known.
+  - platform: template
+    name: Compressor Step
+    icon: mdi:heat-pump
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(554) : NAN;
+  - platform: template
+    name: Accumulated Energy Whole Raw
+    icon: mdi:counter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(562) : NAN;
+  - platform: template
+    name: Accumulated Energy Fraction Raw
+    icon: mdi:counter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(563) : NAN;
+  - platform: template
+    name: Preheat Schedule Raw
+    icon: mdi:calendar-clock-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(649) : NAN;
+  - platform: template
+    name: Notification Code Raw
+    icon: mdi:bell-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(689) : NAN;
+  - platform: template
+    name: Instantaneous Power Raw
+    icon: mdi:flash-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(691) : NAN;
+  - platform: template
+    name: Extraordinary Operation Raw
+    icon: mdi:fire-alert
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(804) : NAN;
+  - platform: template
+    name: Power Input
+    icon: mdi:flash
+    id: wh27s_power_input
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(691) : NAN;
+  # Stock modem combines 100*562+563 into one counter; Wh scale is inferred from integrating 691.
+  # The heater counter is short-span (resets/wraps), so it is not a lifetime total.
+  - platform: template
+    name: Energy Counter
+    icon: mdi:counter
+    id: wh27s_energy
+    entity_category: diagnostic
+    unit_of_measurement: Wh
+    accuracy_decimals: 2
+    update_interval: 10s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return NAN;
+      const float whole = link->telemetry.value(562);
+      const float hundredths = link->telemetry.value(563);
+      if (std::isnan(whole) || std::isnan(hundredths) || hundredths > 99) return NAN;
+      return whole + hundredths / 100.0f;
+  # Lifetime total accumulated on the ESP like the stock modem: only increases count (power loss reverts the heater counter to a saved value).
+  - platform: template
+    name: Energy Consumption
+    icon: mdi:lightning-bolt
+    id: wh27s_energy_consumption
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    update_interval: 10s
+    lambda: |-
+      static int32_t previous = -1;
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return NAN;
+      const float whole = link->telemetry.value(562);
+      const float hundredths = link->telemetry.value(563);
+      if (std::isnan(whole) || std::isnan(hundredths) || hundredths > 99) return NAN;
+      const int32_t counter = static_cast<int32_t>(whole) * 100 + static_cast<int32_t>(hundredths);
+      if (previous >= 0 && counter > previous) {
+        id(wh27s_energy_total_cwh) += counter - previous;
+      }
+      previous = counter;
+      return id(wh27s_energy_total_cwh) / 100000.0f;
+  # 853 is MT_FILTER_REMAIN_TIME: panel filter reset on 2026-11-03 set it 0 -> 854 (4320); unit unverified.
+  - platform: template
+    name: Filter Remaining
+    icon: mdi:air-filter
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return NAN;
+      const float remaining = link->telemetry.value(853);
+      const float maximum = link->telemetry.value(854);
+      if (std::isnan(remaining) || std::isnan(maximum) || maximum <= 0) return NAN;
+      return std::min(100.0f, 100.0f * remaining / maximum);
+  - platform: template
+    name: Filter Remaining Time Raw
+    icon: mdi:air-filter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(853) : NAN;
+  - platform: template
+    name: Filter Maximum Time Raw
+    icon: mdi:air-filter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(854) : NAN;
+  - platform: template
+    name: Device Group Raw
+    icon: mdi:group
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(704) : NAN;
+  - platform: template
+    name: Temperature Step Support Raw
+    icon: mdi:stairs
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(707) : NAN;
+  - platform: template
+    name: Temperature Unit Support Raw
+    icon: mdi:temperature-celsius
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(708) : NAN;
+  - platform: template
+    name: Operating Mode Support Raw
+    icon: mdi:format-list-checks
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(722) : NAN;
+  - platform: template
+    name: Schedule Support Raw
+    icon: mdi:calendar-check
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(723) : NAN;
+  - platform: template
+    name: Version Option Raw
+    icon: mdi:information-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(730) : NAN;
+  - platform: template
+    name: MICOM Version Raw
+    icon: mdi:chip
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(731) : NAN;
+  - platform: template
+    name: Extraordinary Operation Support Raw
+    icon: mdi:fire-alert
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(732) : NAN;
+  - platform: template
+    name: Filter Support Raw
+    icon: mdi:air-filter
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(753) : NAN;
+  - platform: template
+    name: Notification Support Raw
+    icon: mdi:bell-cog-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(756) : NAN;
+  - platform: template
+    name: Smart Function Support Raw
+    icon: mdi:cog-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->telemetry.value(757) : NAN;
+  - platform: template
+    name: UART Valid Frames
+    icon: mdi:check-network-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->decoder.frames : 0;
+  - platform: template
+    name: UART CRC Errors
+    icon: mdi:alert-octagon-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->decoder.crc_errors : 0;
+  - platform: template
+    name: UART Length Errors
+    icon: mdi:ruler
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->decoder.length_errors : 0;
+  - platform: template
+    name: UART Partial Frame Timeouts
+    icon: mdi:timer-alert-outline
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->decoder.timeouts : 0;
+  - platform: template
+    name: UART Transmitted Frames
+    icon: mdi:upload-network
+    entity_category: diagnostic
+    accuracy_decimals: 0
+    update_interval: 5s
+    lambda: |-
+      return wh27s::research_link() ? wh27s::research_link()->transmitted_frames : 0;
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ESP32 IP Address
+      icon: mdi:ip-network
+      entity_category: diagnostic
+    mac_address:
+      name: ESP32 MAC Address
+      icon: mdi:network-outline
+      entity_category: diagnostic
+  - platform: template
+    name: ThinQ Model ID
+    icon: mdi:identifier
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: return {"WHT_056905_WW"};
+  - platform: template
+    name: ThinQ Device Type
+    icon: mdi:shape-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: return {"406"};
+  - platform: template
+    name: Firmware Record 11
+    icon: mdi:chip
+    id: wh27s_firmware_11
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Firmware Checksum 11
+    icon: mdi:pound
+    id: wh27s_checksum_11
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Firmware Record 12
+    icon: mdi:chip
+    id: wh27s_firmware_12
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Firmware Checksum 12
+    icon: mdi:pound
+    id: wh27s_checksum_12
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Firmware Records Raw
+    icon: mdi:chip
+    id: wh27s_firmware_records
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Capability Records Raw
+    icon: mdi:format-list-bulleted
+    id: wh27s_capabilities
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Supported Operating Modes
+    icon: mdi:format-list-checks
+    id: wh27s_supported_modes
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Requested Operating Mode
+    icon: mdi:water-boiler-alert
+    id: wh27s_requested_mode
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Mode Command
+    icon: mdi:send-check
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (wh27s::research_link() == nullptr) return {"Starting"};
+      auto &control = wh27s::research_link()->temperature;
+      return {control.mode_state_name()};
+  - platform: template
+    name: Temperature Command
+    icon: mdi:send-check
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (wh27s::research_link() == nullptr) return {"Starting"};
+      auto &control = wh27s::research_link()->temperature;
+      return {control.temperature_state_name()};
+  - platform: template
+    name: Schedule Command
+    icon: mdi:send-check
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (wh27s::research_link() == nullptr) return {"Starting"};
+      return {wh27s::research_link()->temperature.schedule_state_name()};
+  - platform: template
+    name: Operation Command
+    icon: mdi:send-check
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (wh27s::research_link() == nullptr) return {"Starting"};
+      return {wh27s::research_link()->temperature.operation_state_name()};
+  - platform: template
+    name: UART Read Session
+    icon: mdi:connection
+    entity_category: diagnostic
+    update_interval: 1s
+    lambda: |-
+      if (wh27s::research_link() == nullptr) return {"Starting"};
+      if (wh27s::research_link()->bridge_enabled()) return {"Bridge"};
+      switch (wh27s::research_link()->session.stage()) {
+        case wh27s::ReadSession::Stage::IDLE: return {"Idle"};
+        case wh27s::ReadSession::Stage::DISCOVERY: return {"Discovery"};
+        case wh27s::ReadSession::Stage::CAPABILITIES: return {"Capabilities"};
+        case wh27s::ReadSession::Stage::STATUS: return {"Status"};
+        case wh27s::ReadSession::Stage::READY: return {"Ready"};
+        case wh27s::ReadSession::Stage::FAILED: return {"No response"};
+      }
+      return {"Unknown"};
+  - platform: template
+    name: UART Last Frame Hex
+    icon: mdi:code-brackets
+    id: wh27s_last_frame
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Smart Diagnosis Raw Hex
+    icon: mdi:code-brackets
+    id: wh27s_diagnosis
+    entity_category: diagnostic
+    update_interval: never
+  - platform: template
+    name: Smart Diagnosis
+    id: wh27s_diagnosis_decoded
+    icon: mdi:stethoscope
+    update_interval: never
+  - platform: template
+    name: Error Code
+    icon: mdi:alert-circle
+    update_interval: 5s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float code = link->telemetry.value(545);
+      if (std::isnan(code)) return {};
+      return wh27s::error_code_name(static_cast<uint32_t>(code));
+  - platform: template
+    name: Notification
+    icon: mdi:bell-alert
+    update_interval: 5s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float code = link->telemetry.value(689);
+      if (std::isnan(code)) return {};
+      return wh27s::notification_name(static_cast<uint32_t>(code));
+  - platform: template
+    name: Extraordinary Operation
+    icon: mdi:fire-alert
+    update_interval: 5s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float code = link->telemetry.value(804);
+      if (std::isnan(code)) return {};
+      if (code == 0) return {"Off"};
+      if (code == 1) return {"Emergency heating"};
+      return {"Unknown (" + std::to_string(static_cast<uint32_t>(code)) + ")"};
+  - platform: template
+    name: Supported Notifications
+    icon: mdi:bell-cog-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      return wh27s::capability_labels(link->telemetry.value(756), {
+          {9, "Filter cleaning"}, {11, "Drain check"}, {12, "T&P valve check"},
+          {13, "System error"}, {14, "Power saving"}, {15, "Water leak"},
+          {16, "Temperature sensor error"}, {17, "Water not enough"}});
+  - platform: template
+    name: Smart Functions
+    icon: mdi:cog-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      return wh27s::capability_labels(link->telemetry.value(757),
+          {{1, "Smart Diagnosis (Wi-Fi)"}, {2, "FOTA"}});
+  - platform: template
+    name: Energy Support
+    icon: mdi:lightning-bolt-outline
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      return wh27s::capability_labels(link->telemetry.value(725),
+          {{1, "Accumulated (indoor)"}, {2, "Momentary (in/outdoor)"}});
+  - platform: template
+    name: Temperature Step
+    icon: mdi:stairs
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      return wh27s::capability_labels(link->telemetry.value(707),
+          {{1, "0.5 \u00b0C"}});
+  - platform: template
+    name: Extraordinary Operation Support
+    icon: mdi:fire-alert
+    entity_category: diagnostic
+    update_interval: 60s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      return wh27s::capability_labels(link->telemetry.value(732), {{1, "Emergency heating"}});
