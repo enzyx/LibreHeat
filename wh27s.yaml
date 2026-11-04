@@ -11,12 +11,6 @@ esphome:
     then:
       - lambda: |-
           auto *link = new wh27s::ResearchLink(id(wh27s_uart));
-          link->on_raw = [](const std::string &raw) {
-            id(wh27s_last_frame).publish_state(raw);
-          };
-          link->on_diagnosis = [](const std::string &raw) {
-            id(wh27s_diagnosis).publish_state(raw);
-          };
           link->on_diagnosis_decoded = [](const wh27s::DiagnosisResult &result) {
             id(wh27s_diagnosis_decoded).publish_state(result.summary());
             id(wh27s_diagnosis_index).publish_state(result.valid ? result.index : NAN);
@@ -72,7 +66,7 @@ esphome:
 
 logger:
   baud_rate: 0
-  level: DEBUG
+  level: WARN
   tx_buffer_size: 512
 
 uart:
@@ -303,6 +297,7 @@ sensor:
     update_interval: never
   - platform: template
     name: UART Received Bytes
+    internal: true
     icon: mdi:download-network
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -570,6 +565,7 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->telemetry.value(757) : NAN;
   - platform: template
     name: UART Valid Frames
+    internal: true
     icon: mdi:check-network-outline
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -578,6 +574,7 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->decoder.frames : 0;
   - platform: template
     name: UART CRC Errors
+    internal: true
     icon: mdi:alert-octagon-outline
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -586,6 +583,7 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->decoder.crc_errors : 0;
   - platform: template
     name: UART Length Errors
+    internal: true
     icon: mdi:ruler
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -594,6 +592,7 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->decoder.length_errors : 0;
   - platform: template
     name: UART Partial Frame Timeouts
+    internal: true
     icon: mdi:timer-alert-outline
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -602,6 +601,7 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->decoder.timeouts : 0;
   - platform: template
     name: UART Transmitted Frames
+    internal: true
     icon: mdi:upload-network
     entity_category: diagnostic
     accuracy_decimals: 0
@@ -730,18 +730,6 @@ text_sensor:
         case wh27s::ReadSession::Stage::FAILED: return {"No response"};
       }
       return {"Unknown"};
-  - platform: template
-    name: UART Last Frame Hex
-    icon: mdi:code-brackets
-    id: wh27s_last_frame
-    entity_category: diagnostic
-    update_interval: never
-  - platform: template
-    name: Smart Diagnosis Raw Hex
-    icon: mdi:code-brackets
-    id: wh27s_diagnosis
-    entity_category: diagnostic
-    update_interval: never
   - platform: template
     name: Smart Diagnosis
     id: wh27s_diagnosis_decoded

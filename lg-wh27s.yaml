@@ -7,7 +7,7 @@ esphome:
   friendly_name: LG WH27S Water Heater
   project:
     name: community.lg_wh27s
-    version: 0.9.2
+    version: 0.9.3
   on_boot:
     priority: -110
     then:

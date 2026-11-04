@@ -108,7 +108,10 @@ Home Assistant discovers the device automatically.
 | Smart Diagnosis | Local fault analysis |
 | Extraordinary Operation | Emergency heating flag |
 
-**Diagnostics:** raw values, capabilities, firmware identifiers, UART counters.
+**Diagnostics:** firmware identifiers, capabilities, raw heater values, and command
+status are available in Home Assistant. UART byte/frame counters and transport
+error counters stay internal to ESPHome to avoid activity log noise. Firmware
+logging defaults to warnings and errors.
 
 ## How the controls work
 
