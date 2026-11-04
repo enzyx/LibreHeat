@@ -61,9 +61,8 @@ Alternatively, use `pipx install esphome` if you have pipx installed.
     cp secrets.example.yaml secrets.yaml
    ```
 
-    Fill in your Wi-Fi, OTA, and web credentials in `secrets.yaml`.
-   Edit `static_ip` and `gateway` at the top of [lg-wh27s.yaml](lg-wh27s.yaml), or
-   remove the `manual_ip` block to use DHCP.
+   Fill in your Wi-Fi, OTA, and web credentials in `secrets.yaml`.
+   The device gets its IP address automatically via DHCP.
 
 2. **First flash over USB**
 
@@ -76,7 +75,8 @@ Alternatively, use `pipx install esphome` if you have pipx installed.
 3. **Wire it up.** With the heater powered off, disconnect the LG modem, connect the
    ESP as shown above and power up.
 
-The ESP's web UI should fire up, and you can also update the firmware from there.
+Open the web UI at `http://lg-wh27s.local` (or the IP shown by your router).
+You can also update the firmware from there.
 
 ## Home Assistant
 
