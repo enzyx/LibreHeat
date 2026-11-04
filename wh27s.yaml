@@ -747,7 +747,7 @@ text_sensor:
       return wh27s::error_code_name(static_cast<uint32_t>(code));
   - platform: template
     name: Notification
-    icon: mdi:bell-alert
+    icon: mdi:bell
     update_interval: 5s
     lambda: |-
       auto *link = wh27s::research_link();
