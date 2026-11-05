@@ -41,6 +41,7 @@ class ResearchLink {
   std::function<void(const std::vector<FirmwareRecord> &)> on_firmware;
   std::function<void(const std::vector<Field> &)> on_capabilities;
   std::function<void()> on_bridge_closed;
+  std::function<void()> on_wifi_pairing;
 
   explicit ResearchLink(esphome::uart::UARTComponent *uart) : uart_(uart) {
     decoder.on_frame = [this](const Bytes &frame) { receive_(frame); };
@@ -313,6 +314,8 @@ class ResearchLink {
     if (!payload.diagnosis.empty() && on_diagnosis_decoded)
       on_diagnosis_decoded(decode_smart_diagnosis(payload.diagnosis));
     if (tx_available && transmit_enabled) session.receive(frame, esphome::millis());
+    // ACK above before scheduling Wi-Fi work; repeats are coalesced by the script.
+    if (on_wifi_pairing && is_wifi_pairing_request(frame, payload)) on_wifi_pairing();
   }
 };
 

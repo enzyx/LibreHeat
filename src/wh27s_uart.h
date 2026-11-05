@@ -77,6 +77,13 @@ inline Payload decode_payload(const Bytes &frame) {
   return result;
 }
 
+// Captured on 2026-11-05 after each three-second panel Wi-Fi hold.
+inline bool is_wifi_pairing_request(const Bytes &frame, const Payload &payload) {
+  return frame.size() >= 11 && frame[4] == 0x87 && frame[5] == 1 && frame[6] == 1 &&
+         payload.valid && std::any_of(payload.fields.begin(), payload.fields.end(),
+             [](const Field &field) { return field.type == 681 && field.value == 1; });
+}
+
 struct FirmwareRecord {
   uint32_t type{0};
   uint16_t high{0};
@@ -292,7 +299,7 @@ inline std::string capability_labels(float raw, std::initializer_list<CodeLabel>
 class TemperatureControl {
  public:
   enum class State { IDLE, PENDING, CONFIRMED, INVALID, INVALID_MODE, STALE, UNAVAILABLE, UNCONFIRMED, CANCELLED };
-  enum class Kind { TEMPERATURE, MODE, SCHEDULE, OPERATION };
+  enum class Kind { TEMPERATURE, MODE, SCHEDULE, OPERATION, UNIT };
   static constexpr uint32_t MAX_STATUS_AGE_MS = 60000;
   static constexpr uint32_t READBACK_DELAY_MS = 1000;
   static constexpr uint32_t CONFIRM_TIMEOUT_MS = 5000;
@@ -309,6 +316,7 @@ class TemperatureControl {
   const char *mode_state_name() const { return state_name_(mode_state_); }
   const char *schedule_state_name() const { return state_name_(schedule_state_); }
   const char *operation_state_name() const { return state_name_(operation_state_); }
+  const char *unit_state_name() const { return state_name_(unit_state_); }
 
   static const char *state_name_(State state) {
     switch (state) {
@@ -341,6 +349,7 @@ class TemperatureControl {
     target_known_ = false;
     schedule_known_ = false;
     operation_known_ = false;
+    unit_known_ = false;
     cancel();
   }
 
@@ -399,6 +408,19 @@ class TemperatureControl {
     return begin_(off_needs_schedule_ ? request(2, 1, 0, {0xA2, 0x41}) : request(2, 1, 0, {0x7D, 0xC0}), now);
   }
 
+  // Panel reports: 508=0 Celsius, 508=1 Fahrenheit (2026-11-05).
+  // Write uses the ordinary service-02 SET shape; require report readback.
+  bool toggle_unit(uint32_t now) {
+    if (pending()) return false;
+    kind_ = Kind::UNIT;
+    if (!unit_known_ || uint32_t(now - unit_at_) > MAX_STATUS_AGE_MS) {
+      set_state_(State::STALE);
+      return false;
+    }
+    requested_unit_ = unit_ ^ 1;
+    return begin_(request(2, 1, 0, {0x7F, uint8_t(requested_unit_ ? 0x01 : 0x00)}), now);
+  }
+
   bool set_mode(uint32_t mode, uint32_t now) {
     if (pending()) return false;
     kind_ = Kind::MODE;
@@ -448,6 +470,12 @@ class TemperatureControl {
         mode_at_ = now;
         if (pending() && kind_ == Kind::MODE && field.value == requested_mode_)
           set_state_(State::CONFIRMED);
+      } else if (field.type == 508) {
+        unit_known_ = field.value <= 1;
+        unit_ = static_cast<uint8_t>(field.value);
+        unit_at_ = now;
+        if (pending() && kind_ == Kind::UNIT && field.value == requested_unit_)
+          set_state_(State::CONFIRMED);
       } else if (field.type == 598) {
         target_known_ = field.value <= 255;
         target_raw_ = static_cast<uint8_t>(field.value);
@@ -475,11 +503,13 @@ class TemperatureControl {
   State mode_state_{State::IDLE};
   State schedule_state_{State::IDLE};
   State operation_state_{State::IDLE};
+  State unit_state_{State::IDLE};
   Kind kind_{Kind::TEMPERATURE};
   bool mode_known_{false};
   bool target_known_{false};
   bool schedule_known_{false};
   bool operation_known_{false};
+  bool unit_known_{false};
   bool off_needs_schedule_{false};
   bool readback_sent_{false};
   uint8_t mode_{0};
@@ -489,10 +519,13 @@ class TemperatureControl {
   uint8_t requested_raw_{0};
   uint8_t requested_schedule_{0};
   uint8_t requested_operation_{0};
+  uint8_t unit_{0};
+  uint8_t requested_unit_{0};
   uint32_t mode_at_{0};
   uint32_t target_at_{0};
   uint32_t schedule_at_{0};
   uint32_t operation_at_{0};
+  uint32_t unit_at_{0};
   uint32_t requested_at_{0};
 
   void set_state_(State state) {
@@ -500,6 +533,7 @@ class TemperatureControl {
     if (kind_ == Kind::MODE) mode_state_ = state;
     else if (kind_ == Kind::SCHEDULE) schedule_state_ = state;
     else if (kind_ == Kind::OPERATION) operation_state_ = state;
+    else if (kind_ == Kind::UNIT) unit_state_ = state;
     else temperature_state_ = state;
   }
 

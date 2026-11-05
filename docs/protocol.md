@@ -123,7 +123,7 @@ with 915 and 920 are ignored, and reading single fields by sending
 |---|---|---|---|
 | 503 | MT_IDU_ON_OFF | operation 0 = standby, 1 = on | – |
 | 505 | MT_IDU_OPERATION_MODE | 25 Heat Pump (Eco), 26 Auto, 27 Turbo, 28 Vacation | – |
-| 508 | MT_ROOM_CF_SWITCHING | temperature unit (0 observed with °C) | unresolved |
+| 508 | MT_ROOM_CF_SWITCHING | panel unit: 0 Celsius, 1 Fahrenheit (panel-change capture 2026-11-05) | observed; standalone SET did not change unit |
 | 545 | MT_IDU_ERROR | panel error code, 0 = none | display code |
 | 552 | MT_OUT_CURRENT | current | raw, unscaled |
 | 553 | MT_OUT_VOLTAGE | voltage | raw, unscaled |
@@ -214,3 +214,15 @@ this firmware sends the corresponding writes.
 - Don't run two transmitters (LG modem and ESP) on the line at the same time.
 - Reference implementation: [src/wh27s_uart.h](../src/wh27s_uart.h) (codec, session,
   controls) and [src/wh27s_esphome.h](../src/wh27s_esphome.h) (I/O, ACKs, polling).
+
+## Panel Wi-Fi button
+
+A live capture on 2026-11-05 with the stock modem replaced by the ESP bridge
+returned `040000008701010102aa41be8f` after both prompted three-second Wi-Fi
+button holds: route `87`, service `01`, opcode `01`, sequence `01`, TLV `681=1`.
+Identical packets also repeated, including about eleven seconds after the first
+event. Sequence alone therefore cannot distinguish another hold from a retry.
+The normal modem ACK is sent for every received request; the ESPHome setup script
+coalesces requests during its five-minute window. Static modem analysis also
+routes this field/value to “cmd from uart - soft ap start”. Panel-indicator
+feedback and setup-completion signalling remain unverified and are not sent.

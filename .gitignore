@@ -2,7 +2,8 @@
 secrets.yaml
 **/secrets.yaml
 # ESPHome build output and local test binaries
-.esphome/
+**/.esphome/*
+!/.esphome/flash.sh
 build/
 *.o
 /test_wh27s_*

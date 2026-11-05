@@ -3,10 +3,14 @@ esphome:
   friendly_name: LG-WH27S
   project:
     name: community.lg_wh27s
-    version: 0.9.3
+    version: 0.9.5
   on_boot:
     priority: -110
     then:
+      - script.execute:
+          id: wh27s_recovery_auth
+          username: !secret web_username
+          password: !secret web_password
       - switch.turn_on: wh27s_tx_enable
 
 esp32:
@@ -25,8 +29,9 @@ wifi:
   password: !secret wifi_password
   reboot_timeout: 0s
   ap:
-    ssid: WH27S UART Recovery
-    password: !secret fallback_password
+    ssid: WH27S ESPHome Setup
+    # Recovery is opened when pressing the heat pump wifi button, for a bounded five minutes.
+    ap_timeout: 0s
 
 captive_portal:
 

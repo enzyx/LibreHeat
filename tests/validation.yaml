@@ -3,6 +3,13 @@ substitutions:
 
 esphome:
   name: wh27s-build-validation
+  on_boot:
+    priority: -110
+    then:
+      - script.execute:
+          id: wh27s_recovery_auth
+          username: validation-admin
+          password: validation-password
 
 esp32:
   board: esp32dev
@@ -16,6 +23,11 @@ wifi:
   ssid: VALIDATION_ONLY_DO_NOT_FLASH
   password: VALIDATION_ONLY_DO_NOT_FLASH
   reboot_timeout: 0s
+  ap:
+    ssid: WH27S Validation Recovery
+    ap_timeout: 0s
+
+captive_portal:
 
 api:
   reboot_timeout: 0s
@@ -27,6 +39,9 @@ ota:
 web_server:
   port: 80
   version: 3
+  auth:
+    username: validation-admin
+    password: validation-password
 
 uart:
   id: wh27s_uart

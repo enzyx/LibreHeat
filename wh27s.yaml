@@ -2,10 +2,12 @@ substitutions:
   wh27s_header_dir: src
 
 esphome:
+  min_version: 2026.10.0
   includes:
     - ${wh27s_header_dir}/wh27s_uart.h
     - ${wh27s_header_dir}/wh27s_diagnosis.h
     - ${wh27s_header_dir}/wh27s_esphome.h
+    - ${wh27s_header_dir}/wh27s_wifi.h
   on_boot:
     priority: -100
     then:
@@ -62,6 +64,7 @@ esphome:
             }
           };
           link->on_bridge_closed = []() { id(wh27s_bridge_mode).publish_state(false); };
+          link->on_wifi_pairing = []() { id(wh27s_wifi_pairing).execute(); };
           wh27s::research_link() = link;
 
 logger:
@@ -77,6 +80,25 @@ uart:
   stop_bits: 1
   rx_buffer_size: 4096
 
+script:
+  - id: wh27s_recovery_auth
+    parameters:
+      username: string
+      password: string
+    then:
+      - lambda: wh27s::WiFiPairingAccess::configure_auth(username, password);
+  - id: wh27s_wifi_pairing
+    mode: single
+    then:
+      # Defer radio/HTTP setup until the UART callback has finished.
+      - delay: 1ms
+      - if:
+          condition:
+            lambda: return wh27s::WiFiPairingAccess::begin();
+          then:
+            - delay: 5min
+            - lambda: wh27s::WiFiPairingAccess::finish();
+
 globals:
   - id: wh27s_energy_total_cwh
     type: uint32_t
@@ -84,6 +106,9 @@ globals:
     initial_value: '0'
 
 interval:
+  - interval: 1s
+    then:
+      - lambda: wh27s::WiFiPairingAccess::poll();
   - interval: 10ms
     then:
       - lambda: |-
@@ -610,6 +635,17 @@ sensor:
       return wh27s::research_link() ? wh27s::research_link()->transmitted_frames : 0;
 
 text_sensor:
+  - platform: template
+    name: Panel Temperature Unit
+    icon: mdi:thermometer
+    update_interval: 1s
+    lambda: |-
+      auto *link = wh27s::research_link();
+      if (link == nullptr) return {};
+      const float unit = link->telemetry.value(508);
+      if (unit == 0) return {"Celsius"};
+      if (unit == 1) return {"Fahrenheit"};
+      return {};
   - platform: wifi_info
     ip_address:
       name: ESP32 IP Address

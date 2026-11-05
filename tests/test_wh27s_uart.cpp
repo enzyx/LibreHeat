@@ -29,6 +29,45 @@ int main(int argc, char **) {
   assert(request(1, 1, 1, {0xAA, 0x43}) == unhex("040000006501010102aa43e6cd"));
   assert(request(2, 2, 1, {0xE6, 0}) == unhex("040000006502020102e600f6f9"));
   assert(request(2, 0x10, 0x2C, {}) == unhex("040000006502102c004be4"));
+  // Real panel-button frame, including repeated identical packets in the capture.
+  const auto pairing = unhex("040000008701010102aa41be8f");
+  assert(is_wifi_pairing_request(pairing, decode_payload(pairing)));
+  assert(!is_wifi_pairing_request(request(1, 1, 1, {0xAA, 0x43}),
+                                 decode_payload(request(1, 1, 1, {0xAA, 0x43}))));
+  auto other_pairing = pairing;
+  other_pairing[4] = 0xA7;
+  assert(!is_wifi_pairing_request(other_pairing, decode_payload(other_pairing)));
+  other_pairing = pairing;
+  other_pairing[6] = 4;
+  assert(!is_wifi_pairing_request(other_pairing, decode_payload(other_pairing)));
+  assert(!is_wifi_pairing_request(pairing, Payload{false, {{681, 1}}, {}}));
+  assert(!is_wifi_pairing_request({}, decode_payload(pairing)));
+  TemperatureControl unit_control;
+  std::vector<Bytes> unit_sent;
+  unit_control.on_send = [&](const Bytes &frame) { unit_sent.push_back(frame); };
+  assert(!unit_control.toggle_unit(0));  // Unknown state must not guess a direction.
+  unit_control.receive(synthetic_report({0x7F, 0x00}), 100);
+  assert(unit_control.toggle_unit(101));
+  assert(unit_sent.back() == request(2, 1, 0, {0x7F, 0x01}));
+  assert(!unit_control.toggle_unit(102));  // Do not overlap writes.
+  unit_control.receive(request(2, 0x10, 0, {}), 103);
+  assert(unit_control.pending());  // ACK is not confirmation.
+  unit_control.receive(synthetic_report({0x7F, 0x00}), 104);
+  assert(unit_control.pending());
+  unit_control.tick(1101);
+  assert(unit_sent.back() == request(2, 2, 2, {0x7D, 0x42}));
+  unit_control.receive(synthetic_report({0x7F, 0x01}), 1102);
+  assert(unit_control.state() == TemperatureControl::State::CONFIRMED);
+  assert(unit_control.toggle_unit(1103));
+  assert(unit_sent.back() == request(2, 1, 0, {0x7F, 0x00}));
+  unit_control.tick(6103);
+  assert(unit_control.state() == TemperatureControl::State::UNCONFIRMED);
+  assert(!unit_control.toggle_unit(70000));  // Stale state.
+  unit_control.receive(synthetic_report({0x7F, 0x02}), 70001);
+  assert(!unit_control.toggle_unit(70002));  // Unknown enum.
+  unit_control.receive(synthetic_report({0x7F, 0x00}), 70003);
+  unit_control.invalidate_status();
+  assert(!unit_control.toggle_unit(70004));
   const auto report = unhex("04000000a702042c0395905c227f");
   const auto decoded = decode_payload(report);
   assert(decoded.valid && decoded.fields.size() == 1);

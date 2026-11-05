@@ -67,16 +67,35 @@ Alternatively, use `pipx install esphome` if you have pipx installed.
 2. **First flash over USB**
 
    ```sh
-    esphome run lg-wh27s.yaml
+    ./.esphome/flash.sh /dev/ttyUSB0
    ```
 
-    Use the same command for subsequent updates over Wi-Fi (OTA).
+    For subsequent updates over Wi-Fi (OTA), use `./.esphome/flash.sh lg-wh27s.local`
+    (or the device IP). Run `./.esphome/flash.sh` to choose the destination interactively.
+    To build without flashing, run `./.esphome/flash.sh --build-only`. Firmware is written
+    to `.esphome/build/lg-wh27s/build/`. The script uses ESPHome 2026.10.2 through
+    `uv` when available, otherwise your installed `esphome` command.
 
 3. **Wire it up.** With the heater powered off, disconnect the LG modem, connect the
    ESP as shown above and power up.
 
 Open the web UI at `http://lg-wh27s.local` (or the IP shown by your router).
 You can also update the firmware from there.
+
+### Wi-Fi setup from the heater panel
+
+Hold the panel Wi-Fi button for about three seconds, then release. The ESP opens
+the open **WH27S ESPHome Setup** Wi-Fi network (no Wi-Fi password).
+Connect your phone or laptop to it and open the captive portal (or
+`http://192.168.4.1`) to enter new Wi-Fi credentials. This is ESPHome setup.
+
+Recovery lasts up to five minutes, with password-free web access and browser
+firmware uploads over the AP or existing LAN. Wi-Fi credentials stay unchanged
+unless replaced. The AP closes and admin login returns when recovery ends, even
+if the router is unavailable; successful reconnection may end it sooner. Native
+ESPHome OTA still requires its separate password. UART polling continues, repeated
+button packets are ignored, and the button is disabled during raw UART bridging.
+The heater's Wi-Fi indicator does not yet reflect the ESP's setup state.
 
 ## Home Assistant
 
@@ -92,6 +111,11 @@ Home Assistant discovers the device automatically.
 | Schedule | Panel indicator / remote-off permission |
 | Operating Mode | Heat Pump (Eco), Auto, Turbo, Vacation |
 | Set Water Temperature | 35–60 °C |
+
+`Panel Temperature Unit` follows heater field 508 (`0` Celsius, `1` Fahrenheit),
+observed during local panel changes. Remote panel-unit switching is not supported.
+Water temperature entities and the target control remain in Celsius;
+Home Assistant can convert their display units independently.
 
 
 ### Main sensors
